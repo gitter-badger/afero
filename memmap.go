@@ -18,7 +18,6 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -87,6 +86,7 @@ func (m MemDirMap) Names() (names []string) {
 func (MemMapFs) Name() string { return "MemMapFS" }
 
 func (m *MemMapFs) Create(name string) (File, error) {
+	name = abs(name)
 	m.lock()
 	file := MemFileCreate(name)
 	m.getData()[name] = file
@@ -111,13 +111,29 @@ func (m *MemMapFs) unRegisterWithParent(fileName string) {
 	pmem.memDir.Remove(f)
 }
 
+func abs(path string) string {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		log.Println("ABS ERROR", err)
+		abs = path
+	}
+	return filepath.Clean(abs)
+}
+
+func absParent(path string) string {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		abs = path
+	}
+	return filepath.Dir(filepath.Clean(abs))
+}
+
 func (m *MemMapFs) findParent(f File) File {
-	pdir, _ := path.Split(f.Name())
-	pdir = path.Clean(pdir)
-	pfile, err := m.lockfreeOpen(pdir)
+	pfile, err := m.lockfreeOpen(absParent(f.Name()))
 	if err != nil {
 		return nil
 	}
+	//fmt.Println("absParent1:", f.Name(), ":", pfile.Name())
 	return pfile
 }
 
@@ -127,20 +143,30 @@ func (m *MemMapFs) registerWithParent(f File) {
 	}
 	parent := m.findParent(f)
 	if parent == nil {
-		pdir := filepath.Dir(path.Clean(f.Name()))
+		pdir := absParent(f.Name())
+		//fmt.Println("absParent2:", f.Name(), ":", pdir)
 		err := m.lockfreeMkdir(pdir, 0777)
 		if err != nil {
-			log.Println("Mkdir error:", err)
+			// should never happen
+			log.Println("Mkdir error:", pdir, err)
 			return
 		}
 		parent, err = m.lockfreeOpen(pdir)
 		if err != nil {
+			// should also never happen
 			log.Println("Open after Mkdir error:", err)
 			return
 		}
 	}
-	pmem := parent.(*InMemoryFile)
-	pmem.memDir.Add(f)
+	if parent.Name() != f.Name() {
+		pmem := parent.(*InMemoryFile)
+		if pmem.memDir == nil {
+			pmem.memDir = &MemDirMap{}
+			m.List()
+			log.Fatal("memdir is nil parent:", parent.Name(), " file:", f.Name())
+		}
+		pmem.memDir.Add(f)
+	}
 }
 
 func (m *MemMapFs) lockfreeMkdir(name string, perm os.FileMode) error {
@@ -156,6 +182,7 @@ func (m *MemMapFs) lockfreeMkdir(name string, perm os.FileMode) error {
 }
 
 func (m *MemMapFs) Mkdir(name string, perm os.FileMode) error {
+	name = abs(name)
 	m.rlock()
 	_, ok := m.getData()[name]
 	m.runlock()
@@ -171,11 +198,13 @@ func (m *MemMapFs) Mkdir(name string, perm os.FileMode) error {
 	return nil
 }
 
-func (m *MemMapFs) MkdirAll(path string, perm os.FileMode) error {
-	return m.Mkdir(path, 0777)
+func (m *MemMapFs) MkdirAll(name string, perm os.FileMode) error {
+	name = abs(name)
+	return m.Mkdir(name, 0777)
 }
 
 func (m *MemMapFs) Open(name string) (File, error) {
+	name = abs(name)
 	m.rlock()
 	f, ok := m.getData()[name]
 	ff, ok := f.(*InMemoryFile)
@@ -205,6 +234,7 @@ func (m *MemMapFs) lockfreeOpen(name string) (File, error) {
 }
 
 func (m *MemMapFs) OpenFile(name string, flag int, perm os.FileMode) (File, error) {
+	name = abs(name)
 	file, err := m.Open(name)
 	if os.IsNotExist(err) && (flag&os.O_CREATE > 0) {
 		file, err = m.Create(name)
@@ -230,6 +260,7 @@ func (m *MemMapFs) OpenFile(name string, flag int, perm os.FileMode) (File, erro
 }
 
 func (m *MemMapFs) Remove(name string) error {
+	name = abs(name)
 	m.lock()
 	defer m.unlock()
 
@@ -242,16 +273,17 @@ func (m *MemMapFs) Remove(name string) error {
 	return nil
 }
 
-func (m *MemMapFs) RemoveAll(path string) error {
+func (m *MemMapFs) RemoveAll(name string) error {
+	name = abs(name)
 	m.lock()
-	m.unRegisterWithParent(path)
+	m.unRegisterWithParent(name)
 	m.unlock()
 
 	m.rlock()
 	defer m.runlock()
 
 	for p, _ := range m.getData() {
-		if strings.HasPrefix(p, path) {
+		if strings.HasPrefix(p, name) {
 			m.runlock()
 			m.lock()
 			delete(m.getData(), p)
@@ -263,6 +295,8 @@ func (m *MemMapFs) RemoveAll(path string) error {
 }
 
 func (m *MemMapFs) Rename(oldname, newname string) error {
+	oldname = abs(oldname)
+	newname = abs(newname)
 	m.rlock()
 	defer m.runlock()
 	if _, ok := m.getData()[oldname]; ok {
@@ -283,6 +317,7 @@ func (m *MemMapFs) Rename(oldname, newname string) error {
 }
 
 func (m *MemMapFs) Stat(name string) (os.FileInfo, error) {
+	name = abs(name)
 	f, err := m.Open(name)
 	if err != nil {
 		return nil, err
@@ -291,6 +326,7 @@ func (m *MemMapFs) Stat(name string) (os.FileInfo, error) {
 }
 
 func (m *MemMapFs) Chmod(name string, mode os.FileMode) error {
+	name = abs(name)
 	f, ok := m.getData()[name]
 	if !ok {
 		return &os.PathError{"chmod", name, ErrFileNotFound}
@@ -308,6 +344,7 @@ func (m *MemMapFs) Chmod(name string, mode os.FileMode) error {
 }
 
 func (m *MemMapFs) Chtimes(name string, atime time.Time, mtime time.Time) error {
+	name = abs(name)
 	f, ok := m.getData()[name]
 	if !ok {
 		return &os.PathError{"chtimes", name, ErrFileNotFound}
@@ -327,6 +364,7 @@ func (m *MemMapFs) Chtimes(name string, atime time.Time, mtime time.Time) error 
 func (m *MemMapFs) List() {
 	for _, x := range m.data {
 		y, _ := x.Stat()
-		fmt.Println(x.Name(), y.Size())
+		fmt.Println(x.Name(), y.Size(), y.IsDir(),
+			x.(*InMemoryFile).memDir)
 	}
 }

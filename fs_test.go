@@ -127,6 +127,52 @@ func TestMemFileRead(t *testing.T) {
 	}
 }
 
+func TestMemMapFsRelAbs(t *testing.T) {
+	filename1 := "dotRelTestFile"
+	filename2 := "dotAbsTestFile"
+	fs := new(MemMapFs)
+	err := os.Chdir(testDir)
+	if err != nil {
+		t.Error("Can't Chdir(", testDir, "):", err)
+	}
+	fmt.Println("Working directory:")
+	fmt.Println(os.Getwd())
+
+	// create file with relative path
+	f, err := fs.Create(filepath.Join(".", filename1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.WriteString("DotTestFile content")
+	f.Close()
+
+	// try to open with absolute path
+	_, err = fs.Open(filepath.Join(testDir, filename1))
+	if err != nil {
+		fmt.Println("--- fs1 ---")
+		fs.List()
+		fmt.Println("-----------")
+		t.Error("fs.Open absolute path error:", err)
+	}
+
+	// create file with absolute path
+	f, err = fs.Create(filepath.Join(testDir, filename2))
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.WriteString("DotTestFile content")
+	f.Close()
+
+	// try to open with relative path
+	_, err = fs.Open(filepath.Join(".", filename2))
+	if err != nil {
+		fmt.Println("--- fs2 ---", filepath.Join(".", filename2))
+		fs.List()
+		fmt.Println("-----------")
+		t.Error("fs.Open relative path error:", err)
+	}
+}
+
 func TestRename(t *testing.T) {
 	for _, fs := range Fss {
 		from, to := testDir+"/renamefrom", testDir+"/renameto"
@@ -512,9 +558,7 @@ func TestReaddirAll(t *testing.T) {
 }
 
 func findNames(t *testing.T, root, sub []string, fs Fs) {
-	t.Logf("Names root: %v", root)
-	t.Logf("Names sub: %v", sub)
-
+	var someError = false
 	var foundRoot bool
 	for _, e := range root {
 		_, err := fs.Open(path.Join(testDir, e))
@@ -526,6 +570,7 @@ func findNames(t *testing.T, root, sub []string, fs Fs) {
 		}
 	}
 	if !foundRoot {
+		someError = true
 		t.Error("Didn't find subdirectory we")
 	}
 
@@ -544,10 +589,17 @@ func findNames(t *testing.T, root, sub []string, fs Fs) {
 	}
 
 	if !found1 {
+		someError = true
 		t.Error("Didn't find testfile1")
 	}
 	if !found2 {
+		someError = true
 		t.Error("Didn't find testfile2")
+	}
+
+	if someError {
+		t.Logf("Names root: %v", root)
+		t.Logf("Names sub: %v", sub)
 	}
 }
 
