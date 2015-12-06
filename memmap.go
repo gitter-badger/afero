@@ -99,28 +99,18 @@ func (m *MemMapFs) Create(name string) (File, error) {
 	return file, nil
 }
 
-func (m *MemMapFs) unRegisterWithParent(fileName string) {
+func (m *MemMapFs) unRegisterWithParent(fileName string) error {
 	f, err := m.lockfreeOpen(fileName)
 	if err != nil {
-		if os.IsNotExist(err) {
-			log.Println("Open err:", err)
-		}
-		return
+		return err
 	}
 	parent := m.findParent(f)
 	if parent == nil {
-		log.Fatal("parent of ", f.Name(), " is nil")
+		panic(fmt.Sprint("parent of ", f.Name(), " is nil"))
 	}
 	pmem := parent.(*InMemoryFile)
 	pmem.memDir.Remove(f)
-}
-
-func absParent(path string) string {
-	abs, err := filepath.Abs(path)
-	if err != nil {
-		abs = path
-	}
-	return filepath.Dir(filepath.Clean(abs))
+	return nil
 }
 
 func (m *MemMapFs) findParent(f File) File {
@@ -211,8 +201,7 @@ func (m *MemMapFs) Mkdir(name string, perm os.FileMode) error {
 }
 
 func (m *MemMapFs) MkdirAll(name string, perm os.FileMode) error {
-	name = normalizePath(name)
-	return m.Mkdir(name, 0777)
+	return m.Mkdir(name, perm)
 }
 
 // Handle some relative paths
@@ -230,6 +219,58 @@ func normalizePath(path string) string {
 	// }
 
 	// func abs(path string) string {
+
+	// path2, err := filepath.EvalSymlinks(path)
+	// if err != nil {
+	// 	perr := err.(*os.PathError)
+	// 	path = perr.Path
+	// 	//log.Println("EvalSymlinks error:", "\""+path+"\"", err)
+	// } else {
+	// 	path = path2
+	// }
+
+	const normalizeDebug = false
+
+	evalPath, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		//log.Println("starting to loop for symlinks:", path)
+		var pre, post, file string
+		if normalizeDebug {
+			log.Println("input", path)
+		}
+		pre, post = filepath.Split(path)
+		i := 0
+		if normalizeDebug {
+			log.Println("starting with", pre)
+		}
+		for {
+			evalPath, err = filepath.EvalSymlinks(pre)
+			if err == nil {
+				evalPath = filepath.Join(evalPath, post)
+				break
+			}
+			pre, file = filepath.Split(pre[:len(pre)-1])
+			if normalizeDebug {
+				log.Println("err, continue with", pre)
+			}
+
+			post = filepath.Join(file, post)
+			if normalizeDebug {
+				log.Println("post:", post)
+			}
+			i++
+			if i > 10 {
+				// log.Println("breaking because of 10 iterations")
+				evalPath = path
+				break
+			}
+		}
+		if normalizeDebug {
+			log.Printf("loop: %#v -> %#v\n", path, evalPath)
+		}
+	}
+	path = evalPath
+
 	abs, err := filepath.Abs(path)
 	if err != nil {
 		log.Println("ABS ERROR", err)
@@ -239,6 +280,7 @@ func normalizePath(path string) string {
 }
 
 func (m *MemMapFs) Open(name string) (File, error) {
+	origname := name
 	name = normalizePath(name)
 	m.rlock()
 	f, ok := m.getData()[name]
@@ -248,10 +290,15 @@ func (m *MemMapFs) Open(name string) (File, error) {
 	}
 	m.runlock()
 
+	err := &os.PathError{}
+	err.Op = "Open"
+	err.Path = origname + " -> " + name
+	err.Err = ErrFileNotFound
+
 	if ok {
 		return f, nil
 	} else {
-		return nil, ErrFileNotFound
+		return nil, err
 	}
 }
 
@@ -312,8 +359,11 @@ func (m *MemMapFs) Remove(name string) error {
 func (m *MemMapFs) RemoveAll(name string) error {
 	name = normalizePath(name)
 	m.lock()
-	m.unRegisterWithParent(name)
+	err := m.unRegisterWithParent(name)
 	m.unlock()
+	if err != nil {
+		return err
+	}
 
 	m.rlock()
 	defer m.runlock()
@@ -407,12 +457,17 @@ func (m *MemMapFs) Chtimes(name string, atime time.Time, mtime time.Time) error 
 }
 
 func (m *MemMapFs) List() {
+	var lines = []string{}
 	for _, x := range m.data {
 		y, _ := x.Stat()
 		text := fmt.Sprint(y.Size())
 		if y.IsDir() {
 			text = "[dir]"
 		}
-		fmt.Println(x.Name(), text)
+		lines = append(lines, fmt.Sprintln(x.Name(), text))
+	}
+	sort.Sort(sort.StringSlice(lines))
+	for i := range lines {
+		fmt.Print(lines[i])
 	}
 }

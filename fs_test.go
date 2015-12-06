@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"io"
 	"io/ioutil"
+	"log"
 	"os"
 	"path"
 	"path/filepath"
@@ -32,6 +33,10 @@ var testDir = "/tmp/afero"
 var testSubDir = "/tmp/afero/we/have/to/go/deeper"
 var testName = "test.txt"
 var Fss = []Fs{&MemMapFs{}, &OsFs{}}
+
+func init() {
+	log.SetFlags(log.LstdFlags | log.Lshortfile)
+}
 
 //Read with length 0 should not return EOF.
 func TestRead0(t *testing.T) {
@@ -124,52 +129,6 @@ func TestMemFileRead(t *testing.T) {
 	}
 	if err != io.EOF {
 		t.Errorf("error is not EOF: %v %v %v", n, err, b)
-	}
-}
-
-func TestMemMapFsRelAbs(t *testing.T) {
-	filename1 := "dotRelTestFile"
-	filename2 := "dotAbsTestFile"
-	fs := new(MemMapFs)
-	err := os.Chdir(testDir)
-	if err != nil {
-		t.Error("Can't Chdir(", testDir, "):", err)
-	}
-	fmt.Println("Working directory:")
-	fmt.Println(os.Getwd())
-
-	// create file with relative path
-	f, err := fs.Create(filepath.Join(".", filename1))
-	if err != nil {
-		t.Fatal(err)
-	}
-	f.WriteString("DotTestFile content")
-	f.Close()
-
-	// try to open with absolute path
-	_, err = fs.Open(filepath.Join(testDir, filename1))
-	if err != nil {
-		fmt.Println("--- fs1 ---")
-		fs.List()
-		fmt.Println("-----------")
-		t.Error("fs.Open absolute path error:", err)
-	}
-
-	// create file with absolute path
-	f, err = fs.Create(filepath.Join(testDir, filename2))
-	if err != nil {
-		t.Fatal(err)
-	}
-	f.WriteString("DotTestFile content")
-	f.Close()
-
-	// try to open with relative path
-	_, err = fs.Open(filepath.Join(".", filename2))
-	if err != nil {
-		fmt.Println("--- fs2 ---", filepath.Join(".", filename2))
-		fs.List()
-		fmt.Println("-----------")
-		t.Error("fs.Open relative path error:", err)
 	}
 }
 
@@ -365,9 +324,10 @@ func TestWriteAt(t *testing.T) {
 }
 
 func setupTestDir(t *testing.T) {
+	Fss = []Fs{&MemMapFs{}, &OsFs{}}
 	for _, fs := range Fss {
 		err := fs.RemoveAll(testDir)
-		if err != nil {
+		if err != nil && !os.IsNotExist(err) {
 			t.Fatal(err)
 		}
 		err = fs.MkdirAll(testSubDir, 0700)
@@ -401,6 +361,12 @@ func setupTestDir(t *testing.T) {
 		}
 		f.WriteString("Testfile 4 content")
 		f.Close()
+
+		// mmfs, ok := fs.(*MemMapFs)
+		// if ok {
+		// 	log.Println("Setup files:")
+		// 	mmfs.List()
+		// }
 	}
 }
 
