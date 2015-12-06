@@ -189,6 +189,22 @@ func TestRename(t *testing.T) {
 		if err != nil {
 			t.Fatalf("rename %q, %q failed: %v", to, from, err)
 		}
+		names, err := readDirNames(testDir, fs)
+		if err != nil {
+			t.Fatalf("readDirNames error: %v", err)
+		}
+		found := false
+		for _, e := range names {
+			if e == "renamefrom" {
+				t.Error("File is still called renamefrom")
+			}
+			if e == "renameto" {
+				found = true
+			}
+		}
+		if !found {
+			t.Error("File was not renamed to renameto")
+		}
 		defer fs.Remove(to)
 		_, err = fs.Stat(to)
 		if err != nil {
@@ -492,6 +508,10 @@ func TestWalk(t *testing.T) {
 	outputs := make([]string, len(Fss))
 	for i, fs := range Fss {
 		walkFn := func(path string, info os.FileInfo, err error) error {
+			if err != nil {
+				t.Error("walkFn error:", err)
+				return nil
+			}
 			var size int64
 			if !info.IsDir() {
 				size = info.Size()
@@ -558,6 +578,7 @@ func TestReaddirAll(t *testing.T) {
 }
 
 func findNames(t *testing.T, root, sub []string, fs Fs) {
+
 	var someError = false
 	var foundRoot bool
 	for _, e := range root {

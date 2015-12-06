@@ -43,6 +43,10 @@ func (m *MemMapFs) runlock() { m.getMutex().RUnlock() }
 func (m *MemMapFs) getData() map[string]File {
 	if m.data == nil {
 		m.data = make(map[string]File)
+
+		// Root should always exist, right?
+		// TODO: what about windows?
+		m.getData()["/"] = &InMemoryFile{name: "/", memDir: &MemDirMap{}, dir: true}
 	}
 	return m.data
 }
@@ -86,7 +90,7 @@ func (m MemDirMap) Names() (names []string) {
 func (MemMapFs) Name() string { return "MemMapFS" }
 
 func (m *MemMapFs) Create(name string) (File, error) {
-	name = abs(name)
+	name = normalizePath(name)
 	m.lock()
 	file := MemFileCreate(name)
 	m.getData()[name] = file
@@ -111,15 +115,6 @@ func (m *MemMapFs) unRegisterWithParent(fileName string) {
 	pmem.memDir.Remove(f)
 }
 
-func abs(path string) string {
-	abs, err := filepath.Abs(path)
-	if err != nil {
-		log.Println("ABS ERROR", err)
-		abs = path
-	}
-	return filepath.Clean(abs)
-}
-
 func absParent(path string) string {
 	abs, err := filepath.Abs(path)
 	if err != nil {
@@ -129,7 +124,8 @@ func absParent(path string) string {
 }
 
 func (m *MemMapFs) findParent(f File) File {
-	pfile, err := m.lockfreeOpen(absParent(f.Name()))
+	name := filepath.Dir(normalizePath(f.Name()))
+	pfile, err := m.lockfreeOpen(name)
 	if err != nil {
 		return nil
 	}
@@ -143,36 +139,45 @@ func (m *MemMapFs) registerWithParent(f File) {
 	}
 	parent := m.findParent(f)
 	if parent == nil {
-		pdir := absParent(f.Name())
+		pdir := filepath.Dir(normalizePath(f.Name()))
 		//fmt.Println("absParent2:", f.Name(), ":", pdir)
 		err := m.lockfreeMkdir(pdir, 0777)
 		if err != nil {
 			// should never happen
-			log.Println("Mkdir error:", pdir, err)
-			return
+			panic(fmt.Sprintln("lockfreeMkdir error:", pdir, err))
 		}
 		parent, err = m.lockfreeOpen(pdir)
 		if err != nil {
 			// should also never happen
-			log.Println("Open after Mkdir error:", err)
-			return
+			panic(fmt.Sprintln("lockfreeOpen error:", err))
 		}
 	}
-	if parent.Name() != f.Name() {
-		pmem := parent.(*InMemoryFile)
-		if pmem.memDir == nil {
-			pmem.memDir = &MemDirMap{}
-			m.List()
-			log.Fatal("memdir is nil parent:", parent.Name(), " file:", f.Name())
-		}
-		pmem.memDir.Add(f)
+	pmem := parent.(*InMemoryFile)
+
+	// TODO(mbertschler): memDir is only nil when it was not made with Mkdir
+	// or lockfreeMkdir. In this case the parent is also not a real directory.
+	// This currently only happens for the file ".".
+	// This is a quick hack to make the library usable with relative paths.
+	if pmem.memDir == nil {
+		pmem.dir = true
+		pmem.memDir = &MemDirMap{}
 	}
+
+	pmem.memDir.Add(f)
 }
 
 func (m *MemMapFs) lockfreeMkdir(name string, perm os.FileMode) error {
-	_, ok := m.getData()[name]
+	name = normalizePath(name)
+	x, ok := m.getData()[name]
 	if ok {
-		return ErrFileExists
+		// Only return ErrFileExists if it's a file, not a directory.
+		i, err := x.Stat()
+		if !i.IsDir() {
+			return ErrFileExists
+		}
+		if err != nil {
+			return err
+		}
 	} else {
 		item := &InMemoryFile{name: name, memDir: &MemDirMap{}, dir: true}
 		m.getData()[name] = item
@@ -182,12 +187,19 @@ func (m *MemMapFs) lockfreeMkdir(name string, perm os.FileMode) error {
 }
 
 func (m *MemMapFs) Mkdir(name string, perm os.FileMode) error {
-	name = abs(name)
+	name = normalizePath(name)
 	m.rlock()
-	_, ok := m.getData()[name]
+	x, ok := m.getData()[name]
 	m.runlock()
 	if ok {
-		return ErrFileExists
+		// Only return ErrFileExists if it's a file, not a directory.
+		i, err := x.Stat()
+		if !i.IsDir() {
+			return ErrFileExists
+		}
+		if err != nil {
+			return err
+		}
 	} else {
 		m.lock()
 		item := &InMemoryFile{name: name, memDir: &MemDirMap{}, dir: true}
@@ -199,12 +211,35 @@ func (m *MemMapFs) Mkdir(name string, perm os.FileMode) error {
 }
 
 func (m *MemMapFs) MkdirAll(name string, perm os.FileMode) error {
-	name = abs(name)
+	name = normalizePath(name)
 	return m.Mkdir(name, 0777)
 }
 
+// Handle some relative paths
+func normalizePath(path string) string {
+	// 	path = filepath.Clean(path)
+
+	// 	switch path {
+	// 	case ".":
+	// 		return "/"
+	// 	case "..":
+	// 		return "/"
+	// 	default:
+	// 		return path
+	// 	}
+	// }
+
+	// func abs(path string) string {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		log.Println("ABS ERROR", err)
+		abs = path
+	}
+	return filepath.Clean(abs)
+}
+
 func (m *MemMapFs) Open(name string) (File, error) {
-	name = abs(name)
+	name = normalizePath(name)
 	m.rlock()
 	f, ok := m.getData()[name]
 	ff, ok := f.(*InMemoryFile)
@@ -221,6 +256,7 @@ func (m *MemMapFs) Open(name string) (File, error) {
 }
 
 func (m *MemMapFs) lockfreeOpen(name string) (File, error) {
+	name = normalizePath(name)
 	f, ok := m.getData()[name]
 	ff, ok := f.(*InMemoryFile)
 	if ok {
@@ -234,7 +270,7 @@ func (m *MemMapFs) lockfreeOpen(name string) (File, error) {
 }
 
 func (m *MemMapFs) OpenFile(name string, flag int, perm os.FileMode) (File, error) {
-	name = abs(name)
+	name = normalizePath(name)
 	file, err := m.Open(name)
 	if os.IsNotExist(err) && (flag&os.O_CREATE > 0) {
 		file, err = m.Create(name)
@@ -260,7 +296,7 @@ func (m *MemMapFs) OpenFile(name string, flag int, perm os.FileMode) (File, erro
 }
 
 func (m *MemMapFs) Remove(name string) error {
-	name = abs(name)
+	name = normalizePath(name)
 	m.lock()
 	defer m.unlock()
 
@@ -274,7 +310,7 @@ func (m *MemMapFs) Remove(name string) error {
 }
 
 func (m *MemMapFs) RemoveAll(name string) error {
-	name = abs(name)
+	name = normalizePath(name)
 	m.lock()
 	m.unRegisterWithParent(name)
 	m.unlock()
@@ -295,16 +331,25 @@ func (m *MemMapFs) RemoveAll(name string) error {
 }
 
 func (m *MemMapFs) Rename(oldname, newname string) error {
-	oldname = abs(oldname)
-	newname = abs(newname)
+	oldname = normalizePath(oldname)
+	newname = normalizePath(newname)
+
+	if oldname == newname {
+		return nil
+	}
+
 	m.rlock()
 	defer m.runlock()
 	if _, ok := m.getData()[oldname]; ok {
 		if _, ok := m.getData()[newname]; !ok {
 			m.runlock()
 			m.lock()
-			m.getData()[newname] = m.getData()[oldname]
+			m.unRegisterWithParent(oldname)
+			file := m.getData()[oldname].(*InMemoryFile)
 			delete(m.getData(), oldname)
+			file.name = newname
+			m.getData()[newname] = file
+			m.registerWithParent(file)
 			m.unlock()
 			m.rlock()
 		} else {
@@ -317,7 +362,7 @@ func (m *MemMapFs) Rename(oldname, newname string) error {
 }
 
 func (m *MemMapFs) Stat(name string) (os.FileInfo, error) {
-	name = abs(name)
+	name = normalizePath(name)
 	f, err := m.Open(name)
 	if err != nil {
 		return nil, err
@@ -326,7 +371,7 @@ func (m *MemMapFs) Stat(name string) (os.FileInfo, error) {
 }
 
 func (m *MemMapFs) Chmod(name string, mode os.FileMode) error {
-	name = abs(name)
+	name = normalizePath(name)
 	f, ok := m.getData()[name]
 	if !ok {
 		return &os.PathError{"chmod", name, ErrFileNotFound}
@@ -344,7 +389,7 @@ func (m *MemMapFs) Chmod(name string, mode os.FileMode) error {
 }
 
 func (m *MemMapFs) Chtimes(name string, atime time.Time, mtime time.Time) error {
-	name = abs(name)
+	name = normalizePath(name)
 	f, ok := m.getData()[name]
 	if !ok {
 		return &os.PathError{"chtimes", name, ErrFileNotFound}
@@ -364,7 +409,10 @@ func (m *MemMapFs) Chtimes(name string, atime time.Time, mtime time.Time) error 
 func (m *MemMapFs) List() {
 	for _, x := range m.data {
 		y, _ := x.Stat()
-		fmt.Println(x.Name(), y.Size(), y.IsDir(),
-			x.(*InMemoryFile).memDir)
+		text := fmt.Sprint(y.Size())
+		if y.IsDir() {
+			text = "[dir]"
+		}
+		fmt.Println(x.Name(), text)
 	}
 }
