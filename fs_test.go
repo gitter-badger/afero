@@ -36,6 +36,10 @@ var Fss = []Fs{&MemMapFs{}, &OsFs{}}
 
 func init() {
 	log.SetFlags(log.LstdFlags | log.Lshortfile)
+	if runtime.GOOS == "windows" {
+		testDir = os.TempDir()
+		testSubDir = filepath.Join(testDir, "we", "have", "to", "go", "deeper")
+	}
 }
 
 //Read with length 0 should not return EOF.
